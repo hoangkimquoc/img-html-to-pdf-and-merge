@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "img-to-pdf"
+version = "1.0.0"
+description = "Image to PDF Converter"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+dependencies = [
+    "PyQt6>=6.6.0",
+    "PyQt6-Fluent-Widgets[full]>=1.0.0",
+    "Pillow>=10.0.0",
+]
+
+[project.scripts]
+img-to-pdf = "img_to_pdf.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
