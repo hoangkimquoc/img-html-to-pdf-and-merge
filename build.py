@@ -50,6 +50,7 @@ def build(onefile=False, debug=False):
         # Add data files if needed, e.g. i18n json files
         "--add-data=i18n.en.json;.",
         "--add-data=i18n.vi.json;.",
+        "--add-data=Icon.ico;.",
     ]
     
     for imp in get_hidden_imports():

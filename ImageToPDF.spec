@@ -5,7 +5,7 @@ a = Analysis(
     ['run.py'],
     pathex=['src'],
     binaries=[],
-    datas=[('i18n.en.json', '.'), ('i18n.vi.json', '.')],
+    datas=[('i18n.en.json', '.'), ('i18n.vi.json', '.'), ('Icon.ico', '.')],
     hiddenimports=['PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets', 'qfluentwidgets', 'qfluentwidgets.common', 'qfluentwidgets.components', 'qfluentwidgets.window', 'qframelesswindow', 'PIL', 'PIL.Image', 'PIL.ImageQt'],
     hookspath=[],
     hooksconfig={},

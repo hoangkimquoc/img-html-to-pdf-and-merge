@@ -7,7 +7,8 @@ from PyQt6.QtGui import QIcon, QPixmap, QImage, QImageReader
 
 from qfluentwidgets import (
     PrimaryPushButton, PushButton, ComboBox, CheckBox, LineEdit,
-    InfoBar, InfoBarPosition, SubtitleLabel, BodyLabel, isDarkTheme
+    InfoBar, InfoBarPosition, SubtitleLabel, BodyLabel, isDarkTheme,
+    HyperlinkButton, FluentIcon
 )
 
 from ...utils.drop_list_widget import DropListWidget
@@ -256,9 +257,9 @@ class HomeInterface(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
         
+        
         # Header
-        self.header = SubtitleLabel(self.lang.t("title"), self)
-        layout.addWidget(self.header)
+        self.create_header(layout)
         
         # Drop List
         self.listWidget = DropListWidget(self.add_image_files, self)
@@ -630,3 +631,23 @@ class HomeInterface(QWidget):
         if idx == 2: return 75
         if idx == 3: return 50
         return 100
+
+    def create_header(self, layout):
+        header_widget = QWidget(self)
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.header = SubtitleLabel(self.lang.t("title"), self)
+        
+        self.supportBtn = HyperlinkButton(
+            "https://ko-fi.com/solveproblem",
+            "Support me on Ko-fi",
+            self,
+            FluentIcon.HEART
+        )
+        
+        header_layout.addWidget(self.header)
+        header_layout.addStretch(1)
+        header_layout.addWidget(self.supportBtn)
+        
+        layout.addWidget(header_widget)
