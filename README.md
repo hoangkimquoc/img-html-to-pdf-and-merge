@@ -49,21 +49,11 @@ To create the `ImageToPDF.exe` file yourself:
 2. Wait for the process to finish.
 3. The new `ImageToPDF.exe` will appear in the `dist` folder.
 
----
+## ☕ Support the Project
 
-## ✨ Features
+If you find this tool useful, please support the author:
 
-- **Modern UI**: Designed with Fluent Design System, supporting both Light and Dark themes.
-- **Drag & Drop**: Easily add images by dragging and dropping them into the application.
-- **Multiple Modes**:
-  - **All in one**: Merge all selected images into a single PDF file.
-  - **One by one**: Convert each image into a separate PDF file.
-- **Smart Sorting**: Sort images by Name, Size, Date Modified, or Date Created.
-- **Image Processing**:
-  - Auto-resize options (Original, Portrait, No Margin).
-  - Compression quality settings (Original, High, Medium, Low).
-- **Multilingual**: Support for English and Vietnamese (Tiếng Việt).
-- **Support**: Links to Ko-fi for project support.
+👉 **[Support on Ko-fi](https://ko-fi.com/solveproblem)**
 
 ## 📝 License
 MIT License
