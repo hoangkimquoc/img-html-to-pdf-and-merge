@@ -1,5 +1,6 @@
 import os
 import threading
+import tempfile
 from PIL import Image
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QListWidgetItem, QApplication
 from PyQt6.QtCore import Qt, pyqtSignal, QThreadPool, QRunnable, QObject
@@ -8,13 +9,14 @@ from PyQt6.QtGui import QIcon, QPixmap, QImage, QImageReader
 from qfluentwidgets import (
     PrimaryPushButton, PushButton, ComboBox, CheckBox, LineEdit,
     InfoBar, InfoBarPosition, SubtitleLabel, BodyLabel, isDarkTheme,
-    HyperlinkButton, FluentIcon
+    HyperlinkButton, FluentIcon, TextEdit
 )
 
 from ...utils.drop_list_widget import DropListWidget
 from ...core.config_manager import ConfigManager
 from ...core.language_manager import LanguageManager
 from ...core.theme_manager import ThemeManager
+from ...core.html_to_pdf_converter import HtmlToPdfConverter
 from ..icons import Icons
 
 class ThumbnailSignals(QObject):
@@ -69,6 +71,7 @@ class SortRunnable(QRunnable):
 class ConversionSignals(QObject):
     finished = pyqtSignal(str)
     failed = pyqtSignal(str)
+    progress = pyqtSignal(str)  # For progress log updates
 
 class HomeInterface(QWidget):
     """Home interface for image to PDF conversion."""
@@ -78,15 +81,17 @@ class HomeInterface(QWidget):
         self.config = config
         self.lang = lang
         self.setObjectName("HomeInterface")
-        self.image_files = []
+        self.image_files = []  # List of dicts: {'path': str, 'type': 'image'|'html'}
         self.output_path = "C:/KavPDF/"
         self.thread_pool = QThreadPool.globalInstance()
         self.is_converting = False
         self.cancel_event = threading.Event()
+        self.temp_pdf_files = []  # Track temporary PDF files from HTML conversion
         
         self.conversion_signals = ConversionSignals()
         self.conversion_signals.finished.connect(self.on_conversion_complete)
         self.conversion_signals.failed.connect(self.on_conversion_failed)
+        self.conversion_signals.progress.connect(self.log_progress)
         
         self.setup_ui()
         self.update_texts()
@@ -97,60 +102,147 @@ class HomeInterface(QWidget):
 
     # ... (skipping unchanged methods) ...
 
-    def perform_conversion(self, target_path, method, files):
+    def perform_conversion(self, target_path, method, files, html_to_pdf_map):
         try:
             quality = self.get_quality_setting()
             
-            if method == 1: # All in one
-                images = []
-                for p in files:
+            # Build list of files to process (replacing HTML with their temp PDFs)
+            files_to_process = []
+            for file_obj in files:
+                path = file_obj['path']
+                file_type = file_obj['type']
+                
+                if file_type == 'html':
+                    # Use pre-converted PDF if available
+                    if path in html_to_pdf_map:
+                        files_to_process.append({'path': html_to_pdf_map[path], 'type': 'pdf'})
+                else:
+                    files_to_process.append(file_obj)
+            
+            if self.cancel_event.is_set():
+                self._cleanup_temp_files()
+                self.conversion_signals.failed.emit("Conversion cancelled")
+                return
+            
+            # Step 2: Process based on method
+            if method == 1:  # All in one
+                # Process files in original order to maintain sequence
+                all_pdfs_in_order = []
+                
+                for file_obj in files_to_process:
                     if self.cancel_event.is_set():
+                        self._cleanup_temp_files()
                         self.conversion_signals.failed.emit("Conversion cancelled")
                         return
-                    img = self.process_image(p)
-                    images.append(img)
+                    
+                    path = file_obj['path']
+                    file_type = file_obj['type']
+                    
+                    # If it's already a PDF (HTML converted), use directly
+                    if file_type == 'pdf' or path.lower().endswith('.pdf'):
+                        all_pdfs_in_order.append(path)
+                    else:
+                        # Convert image to temporary PDF
+                        try:
+                            img = self.process_image(path)
+                            temp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+                            temp_pdf.close()
+                            temp_pdf_path = temp_pdf.name
+                            self.temp_pdf_files.append(temp_pdf_path)
+                            
+                            img.save(temp_pdf_path, "PDF", quality=quality)
+                            all_pdfs_in_order.append(temp_pdf_path)
+                        except Exception as e:
+                            print(f"Failed to convert image {path}: {e}")
                 
                 if self.cancel_event.is_set():
+                    self._cleanup_temp_files()
                     self.conversion_signals.failed.emit("Conversion cancelled")
                     return
-
-                if images:
-                    images[0].save(
-                        target_path, 
-                        save_all=True, 
-                        append_images=images[1:], 
-                        quality=quality
-                    )
-                    self.conversion_signals.finished.emit(target_path)
+                
+                # Merge all PDFs in order using pypdf
+                if all_pdfs_in_order:
+                    try:
+                        from pypdf import PdfWriter
+                        
+                        merger = PdfWriter()
+                        for pdf_path in all_pdfs_in_order:
+                            if self.cancel_event.is_set():
+                                self._cleanup_temp_files()
+                                self.conversion_signals.failed.emit("Conversion cancelled")
+                                return
+                            
+                            try:
+                                merger.append(pdf_path)
+                            except Exception as e:
+                                print(f"Failed to merge {pdf_path}: {e}")
+                        
+                        # Write merged PDF
+                        merger.write(target_path)
+                        merger.close()
+                        
+                        self._cleanup_temp_files()
+                        self.conversion_signals.finished.emit(target_path)
+                    except Exception as e:
+                        self._cleanup_temp_files()
+                        self.conversion_signals.failed.emit(f"Merge failed: {str(e)}")
                 else:
-                    self.conversion_signals.failed.emit("No valid images to convert")
-            else: # One by one
+                    self._cleanup_temp_files()
+                    self.conversion_signals.failed.emit("No valid files to convert")
+            else:  # One by one
                 count = 0
-                for p in files:
+                for i, file_obj in enumerate(files):
                     if self.cancel_event.is_set():
+                        self._cleanup_temp_files()
                         self.conversion_signals.failed.emit("Conversion cancelled")
                         return
-                        
+                    
+                    path = file_obj['path']
+                    file_type = file_obj['type']
+                    name = os.path.splitext(os.path.basename(path))[0]
+                    save_path = os.path.join(target_path, f"{name}.pdf")
+                    
                     try:
-                        img = self.process_image(p)
-                        name = os.path.splitext(os.path.basename(p))[0]
-                        save_path = os.path.join(target_path, f"{name}.pdf")
-                        img.save(save_path, "PDF", quality=quality)
-                        count += 1
+                        if file_type == 'html':
+                            # HTML already converted to PDF, copy it
+                            import shutil
+                            if path in html_to_pdf_map:
+                                shutil.copy(html_to_pdf_map[path], save_path)
+                                count += 1
+                        else:
+                            # Convert image to PDF
+                            img = self.process_image(path)
+                            img.save(save_path, "PDF", quality=quality)
+                            count += 1
                     except Exception as e:
-                        print(f"Failed to convert {p}: {e}")
+                        print(f"Failed to convert {path}: {e}")
                 
+                self._cleanup_temp_files()
                 if count > 0:
                     self.conversion_signals.finished.emit(target_path)
                 else:
-                    self.conversion_signals.failed.emit("No valid images to convert")
-                    
+                    self.conversion_signals.failed.emit("No valid files to convert")
+        
         except Exception as e:
+            self._cleanup_temp_files()
             self.conversion_signals.failed.emit(str(e))
+    
+    def _cleanup_temp_files(self):
+        """Clean up temporary PDF files created from HTML conversion."""
+        for temp_file in self.temp_pdf_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except Exception as e:
+                print(f"Failed to delete temp file {temp_file}: {e}")
+        self.temp_pdf_files = []
 
     # ... (skipping unchanged methods) ...
 
     def on_conversion_complete(self, pdf_path):
+        self.log_progress(self.lang.t("log_complete"))
+        self.log_progress(self.lang.t("log_saved", path=pdf_path))
+        
         self.is_converting = False
         self.convertBtn.setEnabled(True)
         self.convertBtn.setText(self.lang.t("convert"))
@@ -162,14 +254,26 @@ class HomeInterface(QWidget):
             position=InfoBarPosition.TOP_RIGHT
         )
         
-        # Open output folder
+        # Auto-open folder containing the PDF
+        import subprocess
+        import platform
         try:
-            folder = pdf_path if os.path.isdir(pdf_path) else os.path.dirname(pdf_path)
-            os.startfile(folder)
-        except Exception:
-            pass
+            folder_path = os.path.dirname(pdf_path) if not os.path.isdir(pdf_path) else pdf_path
+            if platform.system() == "Windows":
+                # Windows: open folder in Explorer
+                os.startfile(folder_path)
+            elif platform.system() == "Darwin":
+                # macOS: open folder in Finder
+                subprocess.run(["open", folder_path])
+            else:
+                # Linux: open folder in file manager
+                subprocess.run(["xdg-open", folder_path])
+        except Exception as e:
+            print(f"Could not open folder: {e}")
 
     def on_conversion_failed(self, msg):
+        self.log_progress(self.lang.t("log_error", msg=msg))
+        
         self.is_converting = False
         self.convertBtn.setEnabled(True)
         self.convertBtn.setText(self.lang.t("convert"))
@@ -261,9 +365,49 @@ class HomeInterface(QWidget):
         # Header
         self.create_header(layout)
         
-        # Drop List
-        self.listWidget = DropListWidget(self.add_image_files, self)
-        layout.addWidget(self.listWidget)
+        # Drop List with control buttons
+        list_container = QWidget(self)
+        list_h_layout = QHBoxLayout(list_container)
+        list_h_layout.setContentsMargins(0, 0, 0, 0)
+        list_h_layout.setSpacing(10)
+        
+        self.listWidget = DropListWidget(self.add_image_files, self.sync_files_from_list, self)
+        list_h_layout.addWidget(self.listWidget)
+        
+        # Control buttons (vertical layout on the right)
+        controls = QWidget(self)
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+        
+        from qfluentwidgets import TransparentToolButton, FluentIcon
+        self.moveUpBtn = TransparentToolButton(FluentIcon.UP, self)
+        self.moveDownBtn = TransparentToolButton(FluentIcon.DOWN, self)
+        self.removeBtn = TransparentToolButton(FluentIcon.DELETE, self)
+        
+        self.moveUpBtn.setToolTip(self.lang.t("move_up"))
+        self.moveDownBtn.setToolTip(self.lang.t("move_down"))
+        self.removeBtn.setToolTip(self.lang.t("remove_item"))
+        
+        self.moveUpBtn.clicked.connect(self.move_item_up)
+        self.moveDownBtn.clicked.connect(self.move_item_down)
+        self.removeBtn.clicked.connect(self.remove_selected_items)
+        
+        controls_layout.addWidget(self.moveUpBtn)
+        controls_layout.addWidget(self.moveDownBtn)
+        controls_layout.addWidget(self.removeBtn)
+        controls_layout.addStretch()
+        
+        list_h_layout.addWidget(controls)
+        layout.addWidget(list_container)
+        
+        # Progress Log (hidden by default, shown during conversion)
+        self.progressLog = TextEdit(self)
+        self.progressLog.setReadOnly(True)
+        self.progressLog.setMaximumHeight(120)
+        self.progressLog.setPlaceholderText("Progress log will appear here during conversion...")
+        self.progressLog.setVisible(False)
+        layout.addWidget(self.progressLog)
         
         # Empty Hint
         # Use a layout on listWidget to center the label perfectly
@@ -453,7 +597,7 @@ class HomeInterface(QWidget):
             self, 
             self.lang.t("add_images"), 
             "", 
-            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp)"
+            "Images and HTML (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp *.html *.htm);;Images (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp);;HTML (*.html *.htm)"
         )
         if files:
             self.add_image_files(files)
@@ -461,44 +605,63 @@ class HomeInterface(QWidget):
     def add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, self.lang.t("add_folder"), "")
         if folder:
-            exts = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".webp")
+            exts = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".webp", ".html", ".htm")
             files = [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(exts)]
             if files:
                 self.add_image_files(files)
             else:
                 InfoBar.info(
                     self.lang.t("no_images_title"), 
-                    "No image files found", 
+                    "No files found", 
                     parent=self, 
                     position=InfoBarPosition.TOP_RIGHT
                 )
 
     def add_image_files(self, files):
-        new = [f for f in files if f not in self.image_files]
-        if new:
-            self.image_files.extend(new)
+        # Convert to file objects with metadata
+        existing_paths = [item['path'] for item in self.image_files]
+        new_files = []
+        for f in files:
+            if f not in existing_paths:
+                # Determine file type
+                file_type = 'html' if f.lower().endswith(('.html', '.htm')) else 'image'
+                new_files.append({'path': f, 'type': file_type})
+        
+        if new_files:
+            self.image_files.extend(new_files)
             self.apply_sort() # Sort immediately after adding
             InfoBar.success(
                 self.lang.t("images_added_title"), 
-                self.lang.t("images_added_body", n=len(new)), 
+                self.lang.t("images_added_body", n=len(new_files)), 
                 parent=self, 
                 position=InfoBarPosition.TOP_RIGHT
             )
 
     def refresh_list(self):
         self.listWidget.clear()
-        # Use a default icon while loading
-        default_icon = Icons.photo().icon()
+        # Use default icons
+        photo_icon = Icons.photo().icon()
+        html_icon = FluentIcon.DOCUMENT.icon()
         
-        for f in self.image_files:
-            item = QListWidgetItem(os.path.basename(f))
-            item.setIcon(default_icon)
-            self.listWidget.addItem(item)
+        for file_obj in self.image_files:
+            path = file_obj['path']
+            file_type = file_obj['type']
             
-            # Load thumbnail async
-            worker = ThumbnailRunnable(f, item)
-            worker.signals.loaded.connect(self.on_thumbnail_loaded)
-            self.thread_pool.start(worker)
+            item = QListWidgetItem(os.path.basename(path))
+            # Store the full file object in item data for reliable sync
+            item.setData(Qt.ItemDataRole.UserRole, file_obj)
+            
+            if file_type == 'html':
+                # Use HTML icon for HTML files
+                item.setIcon(html_icon)
+            else:
+                # Use photo icon and load thumbnail async
+                item.setIcon(photo_icon)
+                worker = ThumbnailRunnable(path, item)
+                worker.signals.loaded.connect(self.on_thumbnail_loaded)
+                self.thread_pool.start(worker)
+            
+            self.listWidget.addItem(item)
             
         self.emptyHint.setVisible(len(self.image_files) == 0)
 
@@ -514,13 +677,13 @@ class HomeInterface(QWidget):
         # 0: Name, 1: MTime, 2: CTime, 3: Size
         if idx == 0:
             # Sort by basename, case insensitive
-            self.image_files.sort(key=lambda x: os.path.basename(x).lower())
+            self.image_files.sort(key=lambda x: os.path.basename(x['path']).lower())
         elif idx == 1:
-            self.image_files.sort(key=lambda x: os.path.getmtime(x))
+            self.image_files.sort(key=lambda x: os.path.getmtime(x['path']))
         elif idx == 2:
-            self.image_files.sort(key=lambda x: os.path.getctime(x))
+            self.image_files.sort(key=lambda x: os.path.getctime(x['path']))
         elif idx == 3:
-            self.image_files.sort(key=lambda x: os.path.getsize(x))
+            self.image_files.sort(key=lambda x: os.path.getsize(x['path']))
             
         self.refresh_list()
 
@@ -545,6 +708,97 @@ class HomeInterface(QWidget):
     def clear_images(self):
         self.image_files = []
         self.refresh_list()
+    
+    def log_progress(self, message):
+        """Append message to progress log with auto-scroll."""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        self.progressLog.append(f"[{timestamp}] {message}")
+        # Auto-scroll to bottom
+        scrollbar = self.progressLog.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    
+    def clear_progress_log(self):
+        """Clear progress log."""
+        self.progressLog.clear()
+    
+    def show_countdown(self, seconds=3):
+        """
+        Show countdown on cancel button.
+        Returns True if user canceled, False if countdown completed.
+        """
+        import time
+        for i in range(seconds, 0, -1):
+            if self.cancel_event.is_set():
+                return True
+            self.cancelBtn.setText(f"Cancel ({i}s)")
+            QApplication.processEvents()
+            time.sleep(1)
+        # Reset button text
+        self.cancelBtn.setText(self.lang.t("cancel") if hasattr(self.lang, 't') else "Cancel")
+        return False
+    
+    def move_item_up(self):
+        """Move selected item up in the list."""
+        current_row = self.listWidget.currentRow()
+        if current_row > 0:
+            # Remove item from widget (preserves data)
+            item = self.listWidget.takeItem(current_row)
+            # Re-insert it one position up
+            self.listWidget.insertItem(current_row - 1, item)
+            # Select the moved item
+            self.listWidget.setCurrentRow(current_row - 1)
+            # Sync image_files from widget order
+            self.sync_files_from_list()
+    
+    def move_item_down(self):
+        """Move selected item down in the list."""
+        current_row = self.listWidget.currentRow()
+        if current_row >= 0 and current_row < self.listWidget.count() - 1:
+            # Remove item from widget (preserves data)
+            item = self.listWidget.takeItem(current_row)
+            # Re-insert it one position down
+            self.listWidget.insertItem(current_row + 1, item)
+            # Select the moved item
+            self.listWidget.setCurrentRow(current_row + 1)
+            # Sync image_files from widget order
+            self.sync_files_from_list()
+    
+    def remove_selected_items(self):
+        """Remove selected items from the list."""
+        selected_items = self.listWidget.selectedItems()
+        if not selected_items:
+            return
+        
+        # Get indices of selected items
+        indices_to_remove = []
+        for item in selected_items:
+            row = self.listWidget.row(item)
+            indices_to_remove.append(row)
+        
+        # Remove from image_files (reverse order to maintain indices)
+        for index in sorted(indices_to_remove, reverse=True):
+            if 0 <= index < len(self.image_files):
+                del self.image_files[index]
+        
+        # Refresh list
+        self.refresh_list()
+    
+    def sync_files_from_list(self):
+        """Sync image_files list order from current listWidget order (after drag-drop)."""
+        # Build new ordered list from widget items using stored data
+        new_order = []
+        for i in range(self.listWidget.count()):
+            item = self.listWidget.item(i)
+            # Retrieve the file object stored in item data
+            file_obj = item.data(Qt.ItemDataRole.UserRole)
+            if file_obj:
+                new_order.append(file_obj)
+        
+        # Update image_files with new order
+        if len(new_order) == len(self.image_files):
+            self.image_files = new_order
+            print(f"DEBUG: Synced order - {[os.path.basename(f['path']) for f in self.image_files]}")
 
     def cancel_conversion(self):
         if self.is_converting:
@@ -585,21 +839,82 @@ class HomeInterface(QWidget):
             if not pdf_path:
                 return
             target_path = pdf_path
-            
+        
+        # IMPORTANT: Convert HTML files to PDF on MAIN THREAD first
+        # WebEngine requires main Qt thread
+        self.temp_pdf_files = []
+        html_to_pdf_map = {}  # Maps original HTML path to temp PDF path
+        
+        # Setup UI for conversion early (including cancel button)
         self.is_converting = True
         self.cancel_event.clear()
-        
         self.convertBtn.setEnabled(False)
-        self.convertBtn.setText(self.lang.t("converting") if hasattr(self.lang, 't') else "Converting...")
-        
         self.cancelBtn.setVisible(True)
         self.cancelBtn.setEnabled(True)
         self.cancelBtn.setText(self.lang.t("cancel") if hasattr(self.lang, 't') else "Cancel")
         
+        # Show progress log
+        self.progressLog.setVisible(True)
+        self.clear_progress_log()
+        self.log_progress(self.lang.t("log_starting"))
+        
+        # Count HTML files for progress display
+        html_count = sum(1 for f in self.image_files if f['type'] == 'html')
+        html_idx = 0
+        
+        for file_obj in self.image_files:
+            # Check for cancellation
+            if self.cancel_event.is_set():
+                self._cleanup_temp_files()
+                self.is_converting = False
+                self.convertBtn.setEnabled(True)
+                self.convertBtn.setText(self.lang.t("convert"))
+                self.cancelBtn.setVisible(False)
+                return
+                
+            if file_obj['type'] == 'html':
+                path = file_obj['path']
+                html_idx += 1
+                
+                # Log start
+                filename = os.path.basename(path)
+                self.log_progress(self.lang.t("log_converting_html", idx=html_idx, total=html_count, file=filename))
+                
+                # Update UI to show progress
+                self.convertBtn.setText(f"Converting HTML {html_idx}/{html_count}...")
+                QApplication.processEvents()
+                
+                try:
+                    # Create temp PDF
+                    temp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+                    temp_pdf.close()
+                    temp_pdf_path = temp_pdf.name
+                    self.temp_pdf_files.append(temp_pdf_path)
+                    
+                    # Convert HTML to PDF (on main thread)
+                    converter = HtmlToPdfConverter()
+                    result_path = converter.convert_file_sync(path, temp_pdf_path)
+                    
+                    if result_path:
+                        html_to_pdf_map[path] = result_path
+                        self.log_progress(self.lang.t("log_converted", file=filename))
+                    else:
+                        self.log_progress(self.lang.t("log_failed", file=filename))
+                        print(f"Failed to convert HTML: {path}")
+                except Exception as e:
+                    print(f"Error converting HTML {path}: {e}")
+        
+        # Now start background thread with converted files
+        self.convertBtn.setText(self.lang.t("converting") if hasattr(self.lang, 't') else "Converting...")
+        
+        if html_count > 0:
+            self.log_progress(self.lang.t("log_html_complete", count=html_count))
+        self.log_progress(self.lang.t("log_starting_merge"))
+        
         # Pass a copy of the current (sorted) list to the thread
         files_to_convert = self.image_files[:]
         
-        t = threading.Thread(target=self.perform_conversion, args=(target_path, method, files_to_convert))
+        t = threading.Thread(target=self.perform_conversion, args=(target_path, method, files_to_convert, html_to_pdf_map))
         t.start()
 
 

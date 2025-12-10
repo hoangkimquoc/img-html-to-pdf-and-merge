@@ -13,6 +13,8 @@ dependencies = [
     "PyQt6>=6.6.0",
     "PyQt6-Fluent-Widgets[full]>=1.0.0",
     "Pillow>=10.0.0",
+    "pypdf>=3.0.0",
+    "selenium>=4.0.0",
 ]
 
 [project.scripts]

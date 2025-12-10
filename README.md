@@ -1,6 +1,37 @@
-# ImageToPDF Converter
+# Image & HTML to PDF Converter/Merge
 
-A modern, beautiful, and powerful Image to PDF converter application built with Python and Qt (PyQt6 & QFluentWidgets).
+A modern, beautiful, and powerful converter application that transforms **images** and **HTML files** to PDF. Built with Python and Qt (PyQt6 & QFluentWidgets).
+
+**Features:**
+- Convert images (PNG, JPG, JPEG, BMP, GIF, TIFF, WebP) to PDF
+- Convert HTML files to PDF with full rendering support
+- Merge multiple files (images and HTML) into a single PDF
+- Individual conversion (one file → one PDF) or batch merge (all files → one PDF)
+- Drag and drop support for easy file addition
+- Multiple quality and compression options
+
+## 🎉 What's New in Version 2.0
+
+**HTML to PDF Conversion**
+- ✅ Convert HTML files with pixel-perfect CSS rendering
+- ✅ Uses your system Chrome/Edge (no extra browser download)
+- ✅ Mix HTML and images in single PDF (HTML + HTML, HTML + Image, Image + Image)
+
+**Advanced List Management**
+- ✅ Drag & drop to reorder files
+- ✅ Up/Down arrow buttons for precise ordering
+- ✅ Remove button to delete files
+- ✅ Multi-select support (Ctrl+Click)
+
+**Real-time Progress Display**
+- ✅ See conversion progress as it happens
+- ✅ Timestamped logs with status icons
+- ✅ Know exactly what's being processed
+
+**UX Improvements**
+- ✅ Auto-open output folder after conversion
+- ✅ Cancel anytime during conversion
+- ✅ Full Vietnamese & English localization
 
 ![Screenshot](image.png)
 
@@ -28,8 +59,10 @@ pip install -r requirements.txt
 ```
 *Note: If `requirements.txt` is missing, manually install:*
 ```bash
-pip install PyQt6 "PyQt6-Fluent-Widgets[full]" Pillow pyinstaller
+pip install PyQt6 "PyQt6-Fluent-Widgets[full]" Pillow pypdf selenium pyinstaller
 ```
+
+> **Note for HTML to PDF feature:** The application uses **Selenium** with your system's **Chrome** or **Edge** browser for HTML rendering. Make sure you have either Chrome or Edge installed on your system (most Windows systems already have Edge).
 
 ### 2. Running the App
 You can run the application in two ways:

@@ -8,7 +8,9 @@ import os
 REQUIRED = [
     "PyQt6",
     "PyQt6-Fluent-Widgets",
-    "Pillow"
+    "Pillow",
+    "pypdf",
+    "selenium"
 ]
 
 
